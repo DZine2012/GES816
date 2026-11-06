@@ -1,0 +1,20 @@
+PRÉ-ENREGISTREMENT – GES816
+Date : 15 octobre 2026 (avant tout calcul sur 2001-2016)
+
+Données ayant servi à formuler les hypothèses : Yahoo Finance, oct. 2016 – oct. 2026 (23 actifs).
+Données de confirmation : Yahoo Finance, janv. 2001 – sept. 2016 (jamais utilisées auparavant).
+
+Hypothèses (filtre ADX(14) >= 17 ET tendance hebdomadaire EMA-10/EMA-40 pour toutes) :
+  H1  V3 : entrée quand l'OOI (diapo 269) et la méthode vélocité/accélération (diapos 566-568) sont d'accord.
+  H2  Famille OOI : moyenne des 5 règles OOI & {Vél/accél, MM-65+3CC, TMT lissé, Trend Score, AMA Best}.
+  H3  V2 : AMA Variation Method « Best » (diapo 98).
+  H4  Tout le cours : moyenne des 57 règles (10 indicateurs seuls, 45 paires, 2 votes).
+
+Paramètres : valeurs par défaut des diapos ; aucun réglage modifié après le 15 octobre 2026.
+Exécution : signal à la clôture t, position de t à t+1 ; demi-spread à chaque entrée/sortie ; risque égal 10 % de vol par actif.
+Univers principal : 23 actifs (moyenne sur les actifs disponibles) ; secondaire : XAUUSD, WTI, JPN225, AUDNZD, EURGBP.
+Test : H0 Sharpe <= 0, t-test unilatéral, correction de Holm sur les 4 hypothèses.
+Critère de succès : p ajustée < 0,05 sur l'univers principal. Le résultat sera rapporté tel quel, qu'il soit positif ou négatif.
+
+Contrôle d'absence de biais : sur marche aléatoire sans frais, |t| < 1 pour les 4 hypothèses.
+Empreinte SHA-256 du code : 3457c6ea9ca248693b813ab27be05e9265ae791593e5da19d538b8e64159ecf7

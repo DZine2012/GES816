@@ -1,0 +1,725 @@
+---
+title: "GES816 – Moteur de décision de la méthode V2"
+subtitle: "AMA Variation « Best » + ADX(14) ≥ 17 + tendance hebdomadaire EMA 10/40 — trades du 28 septembre au 2 novembre 2026"
+author: "École de technologie supérieure, Montréal"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    df_print: kable
+params:
+  source: "yahoo"        # "yahoo" : télécharge les cours sur Yahoo Finance ; "csv" : lit le dossier data/ du zip d'origine
+  fin: "2026-11-02"      # dernière séance : toutes les positions sont fermées à la clôture ("2026-10-30" avec le zip d'origine)
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 10, fig.height = 4.5, fig.align = "center")
+```
+
+```{css, echo = FALSE}
+table.dataTable td, table.dataTable th { font-size: 12.5px; }
+table.dataTable td:last-child { min-width: 520px; white-space: normal; }
+table.dataTable td:nth-child(-n+10) { white-space: nowrap; }
+```
+
+```{=html}
+<div style="font-family: Arial, Helvetica, sans-serif; border-top: 3px solid #333; border-bottom: 1px solid #ccc; padding: 8px 0; margin: 6px 0 22px 0;">
+  <div style="font-size: 16px; font-weight: 700;">École de technologie supérieure · Montréal</div>
+  <div style="font-size: 13.5px; color: #555;">GES816 – Méthodes et systèmes d'investissement · Automne 2026 · Professeur : Edmond T. Miresco</div>
+</div>
+```
+
+# À quoi sert ce moteur
+
+Ce document est le moteur de décision de ma période de trading, du 28 septembre au 2 novembre 2026 (trades tenus
+aux prix de Yahoo Finance plutôt que dans MT5). Chaque jour, à la clôture, il fait pour chacun des quatre
+actifs (or, USO, AUDNZD, EURGBP) ce que je faisais à la main avec la méthode V2 :
+
+1. **Il calcule les indicateurs** : `per` (AMA Variation « Best »), ADX(14), ATR(14) et la tendance hebdomadaire.
+2. **Il décide** : ACHAT, VENTE, CONSERVER, SORTIE, STOP ou AUCUNE, et il écrit la raison avec les chiffres du jour.
+3. **Il calcule la taille** de chaque position (1 % du capital risqué, stop à 2 × ATR) avec les contrats du compte démo.
+4. **Il compte les coûts** (swap, spread, glissement) et suit le capital, le drawdown et les limites de risque du compte.
+5. **Il se contrôle** : relancé sur la période de mon journal (28 septembre – 30 octobre), il doit retrouver les cinq
+   trades du journal, quantités et P&L, à 0,01 $ près.
+
+| | Ce moteur | Backtest (`GES816_backtest_4_actifs.Rmd`) |
+|---|---|---|
+| Période | 28 sept. – 2 nov. 2026 : mes trades | 2003 – 25 sept. 2026 : l'historique |
+| But | produire et justifier chaque décision | mesurer la règle sur 23 ans |
+| Résultat | P&L en dollars (quantités, swaps et spreads du compte démo) | résultat en R (multiples du risque) |
+| Pétrole | ETF USO | contrat à terme WTI (CL=F) |
+| Forex | barres reconstruites à 17 h, heure de New York | barres Yahoo de minuit à Londres, corrigées |
+
+Le même code existe en script, `GES816_V2_moteur.R` (à lancer avec `Rscript`, il écrit seulement les CSV du dossier
+`sorties/`). Ce document contient ce code, l'explique et produit le rapport HTML.
+
+**Pour l'exécuter** : ouvrir ce fichier dans RStudio et cliquer sur *Knit* (connexion Internet requise). Avec
+`source = "yahoo"` (par défaut), le document télécharge lui-même tous les cours sur Yahoo Finance et les enregistre
+dans le dossier `data_yahoo/`. Avec `source = "csv"`, il lit plutôt le dossier `data/` du zip d'origine
+(`GES816_V2_R.zip`), placé à côté de ce fichier.
+
+# Règles de la méthode V2
+
+| Élément | Règle |
+|---|---|
+| Signal de momentum | AMA de Kaufman (21, 2, 30), lissée sur 2 barres ; dif = AMA lissée − AMA lissée 2 barres avant ; **per = EMA(dif, 21)** |
+| Filtre de force | ADX(14) de Wilder **≥ 17** |
+| Filtre de tendance | EMA 10 et EMA 40 des clôtures hebdomadaires, **dernière semaine terminée** seulement |
+| Achat | per ≥ 0 **et** tendance hebdo haussière (EMA10 > EMA40) **et** ADX ≥ 17 |
+| Vente | per < 0 **et** tendance hebdo baissière (EMA10 < EMA40) **et** ADX ≥ 17 |
+| Sortie | à la clôture, dès qu'une des trois conditions n'est plus vraie, ou stop touché en séance |
+| Stop-loss | 2 × ATR(14) depuis le prix d'entrée, fixe. **Aucun take-profit** : la sortie se fait sur le signal |
+| Taille | 1 % du capital / (2 × ATR × valeur du point par lot), arrondi vers le bas au pas de volume |
+| Limites du compte | 5 positions maximum, perte journalière de 5 %, drawdown de 10 % |
+
+# Paquets et fichiers de cours
+
+Les paquets manquants sont installés automatiquement (une seule fois). Le moteur lui-même n'utilise que R de base :
+les paquets servent aux tableaux et aux graphiques du rapport.
+
+```{r paquets}
+paquets <- c("knitr", "rmarkdown", "kableExtra", "ggplot2", "DT", "curl", "jsonlite")
+manquants <- paquets[!vapply(paquets, requireNamespace, logical(1), quietly = TRUE)]
+if (length(manquants)) install.packages(manquants, repos = "https://cloud.r-project.org")
+suppressPackageStartupMessages({ library(knitr); library(kableExtra); library(ggplot2); library(DT) })
+tab <- function(x, ...) kbl(x, format = "html", ...) |>
+  kable_styling(bootstrap_options = c("striped", "condensed", "hover"), full_width = FALSE, font_size = 13)
+
+if (params$source == "csv") {          # mode csv : fichiers du zip d'origine dans le dossier "data"
+  fichiers <- file.path("data", c("XAUUSD.csv", "USO.csv", "AUDNZD.csv", "EURGBP.csv", paste0("FX_", params$fin, ".csv")))
+  absents <- fichiers[!file.exists(fichiers)]
+  if (length(absents)) stop("Fichiers introuvables dans le dossier ", file.path(normalizePath(".", winslash = "/"), "data"),
+                            " : ", paste(basename(absents), collapse = ", "),
+                            ". Copier à côté de ce .Rmd le dossier data/ du zip GES816_V2_R.zip, ou utiliser source = \"yahoo\".")
+}
+```
+
+# Téléchargement des cours sur Yahoo Finance
+
+Les cours sont lus directement sur l'API de Yahoo Finance (celle qu'utilise `quantmod`). `quantmod` ne sert pas ici :
+il ne donne que 7 jours de cours horaires, alors que le forex en demande près de deux ans.
+
+- **Or (GC=F) et USO** : cours journaliers, datés dans le fuseau de la bourse (New York).
+- **AUDNZD et EURGBP** : la barre journalière forex de Yahoo est défectueuse (sa « clôture » est en fait l'ouverture).
+  Les barres journalières sont donc reconstruites à partir des cours horaires : une séance va de 17 h la veille à 17 h,
+  heure de New York, comme sur MT5. Yahoo ne garde les cours horaires que 730 jours.
+- **Taux NZDUSD et GBPUSD** : clôture de 17 h, heure de New York, le dernier jour de la période, pour convertir le P&L
+  en dollars.
+
+```{r yahoo, eval = params$source == "yahoo"}
+FIN_DONNEES <- as.Date(params$fin)                    # même date que FIN ci-dessous
+
+yahoo <- function(tk, de, a, intervalle) {            # une requête à l'API « chart » de Yahoo Finance
+  url <- sprintf("https://query2.finance.yahoo.com/v8/finance/chart/%s?period1=%.0f&period2=%.0f&interval=%s",
+                 utils::URLencode(tk, reserved = TRUE), as.numeric(as.POSIXct(as.Date(de))),
+                 as.numeric(as.POSIXct(as.Date(a))), intervalle)
+  rep <- curl::curl_fetch_memory(url, handle = curl::new_handle(useragent = "Mozilla/5.0"))
+  if (rep$status_code != 200) stop("Yahoo Finance a refusé ", tk, " (code ", rep$status_code, ") : ", rawToChar(rep$content))
+  y <- jsonlite::fromJSON(rawToChar(rep$content))$chart$result
+  q <- unlist(y$indicators$quote[[1]], recursive = FALSE)
+  x <- data.frame(t = .POSIXct(y$timestamp[[1]], tz = y$meta$exchangeTimezoneName),
+                  Open = q$open, High = q$high, Low = q$low, Close = q$close)
+  x[stats::complete.cases(x), ]
+}
+propre <- function(d) {                               # une barre par date, plus haut et plus bas cohérents
+  d <- d[order(d$Date), ]; d <- d[!duplicated(d$Date, fromLast = TRUE) & d$Date <= FIN_DONNEES, ]
+  d$High <- pmax(d$High, d$Open, d$Close); d$Low <- pmin(d$Low, d$Open, d$Close)
+  rownames(d) <- NULL; d
+}
+journalier <- function(tk, de) {                      # date de la séance dans le fuseau de la bourse
+  x <- yahoo(tk, de, FIN_DONNEES + 3, "1d")
+  propre(data.frame(Date = as.Date(format(x$t, "%Y-%m-%d", tz = attr(x$t, "tzone"))), x[, -1]))
+}
+barres_17h <- function(tk, de) {                      # forex : séance de 17 h (veille) à 17 h, heure de New York
+  x <- yahoo(tk, de, FIN_DONNEES + 3, "1h")           # horodatage = début de l'heure
+  jour <- as.Date(format(x$t + 7 * 3600, "%Y-%m-%d", tz = "America/New_York"))   # 17 h -> séance du lendemain
+  b <- data.frame(Date = as.Date(names(split(x$Open, jour))),
+                  Open = vapply(split(x$Open, jour), function(v) v[1], 0), High = vapply(split(x$High, jour), max, 0),
+                  Low = vapply(split(x$Low, jour), min, 0), Close = vapply(split(x$Close, jour), function(v) v[length(v)], 0))
+  propre(b[!format(b$Date, "%u") %in% c("6", "7"), ])
+}
+ecrire <- function(d, f) {                            # 17 chiffres : le fichier relu redonne exactement les mêmes cours
+  d[-1] <- lapply(d[-1], sprintf, fmt = "%.17g"); write.csv(d, f, row.names = FALSE, quote = FALSE)
+}
+
+debut_horaire <- max(as.Date("2024-01-15"), Sys.Date() - 728)     # limite de 730 jours de Yahoo
+cours <- list(XAUUSD = journalier("GC=F", "2024-01-16"), USO = journalier("USO", "2024-01-16"),
+              AUDNZD = barres_17h("AUDNZD=X", debut_horaire), EURGBP = barres_17h("EURGBP=X", debut_horaire))
+taux <- vapply(c(NZDUSD = "NZDUSD=X", GBPUSD = "GBPUSD=X"), function(tk) {
+  b <- barres_17h(tk, FIN_DONNEES - 10); b$Close[b$Date == FIN_DONNEES]
+}, numeric(1))
+
+dir.create("data_yahoo", showWarnings = FALSE)
+for (a in names(cours)) ecrire(cours[[a]], file.path("data_yahoo", paste0(a, ".csv")))
+write.csv(data.frame(Pair = names(taux), Rate = sprintf("%.17g", taux)), file.path("data_yahoo", paste0("FX_", params$fin, ".csv")),
+          row.names = FALSE, quote = FALSE)
+tab(data.frame(Actif = names(cours), Source = c("GC=F journalier", "USO journalier", "AUDNZD=X horaire -> 17 h NY", "EURGBP=X horaire -> 17 h NY"),
+               Début = sapply(cours, function(d) format(min(d$Date))), Fin = sapply(cours, function(d) format(max(d$Date))),
+               Séances = sapply(cours, nrow), check.names = FALSE), row.names = FALSE,
+    caption = sprintf("Cours téléchargés le %s ; taux du %s : NZDUSD %.5f, GBPUSD %.5f (journal du 30/10 : 0,56322 et 1,33910)",
+                      format(Sys.Date(), "%d/%m/%Y"), format(FIN_DONNEES, "%d/%m/%Y"), taux[["NZDUSD"]], taux[["GBPUSD"]]))
+```
+
+# Paramètres et spécifications des contrats
+
+Tous les réglages de la méthode sont regroupés ici. `pv` est le gain en dollars pour une variation de 1,0 du prix, par
+lot (ou par action pour USO). Pour AUDNZD et EURGBP, le gain est en NZD ou en GBP : il est converti en dollars au taux
+du dernier jour de la période.
+
+```{r parametres}
+CAPITAL   <- 50000                     # capital de départ ($)
+DEBUT     <- as.Date("2026-09-28")     # première séance de décision
+FIN       <- as.Date(params$fin)       # dernière séance : clôture forcée de tout
+DOSSIER   <- if (params$source == "yahoo") "data_yahoo" else "data"   # CSV : Date,Open,High,Low,Close
+
+AMA_N <- 21; AMA_FAST <- 2; AMA_SLOW <- 30   # AMA de Kaufman 21/2/30
+PER_EMA  <- 21                              # per = EMA(dif, 21)
+ADX_N    <- 14; ADX_MIN <- 17               # filtre de force de tendance
+ATR_N    <- 14; ATR_MULT <- 2               # stop = 2 x ATR(14)
+RISQUE   <- 0.01                            # 1 % du capital risqué par trade
+W_FAST   <- 10; W_SLOW <- 40                # EMA hebdomadaires 10 / 40
+MAX_POS  <- 5                               # positions simultanées max
+PERTE_JOUR_MAX <- 0.05                      # perte journalière max 5 %
+DD_MAX   <- 0.10                            # drawdown max 10 %
+
+# Taux de change (clôture du dernier jour) pour convertir le P&L en $
+FX     <- read.csv(file.path(DOSSIER, paste0("FX_", format(FIN), ".csv")))
+NZDUSD <- FX$Rate[FX$Pair == "NZDUSD"]
+GBPUSD <- FX$Rate[FX$Pair == "GBPUSD"]
+
+# Spécifications des contrats (compte MetaQuotes-Demo, 30 oct. 2026)
+#  pv     = $ gagnés pour une variation de 1,0 du prix, par lot (ou par action)
+#  swap_* = points par lot et par nuit (négatif = coût), triple le mercredi
+#  spread = points ; slip = glissement par ordre, en unité de prix
+SPEC <- list(
+  XAUUSD = list(nom = "Or (XAUUSD)",       point = 0.01,  pv = 10,            step = 0.01, unite = "lot",
+                swap_long = -12.6, swap_short = -4.6,  triple = TRUE,  spread = 31, slip = 31 * 0.01 / 2, dec = 2),
+  USO    = list(nom = "Pétrole (ETF USO)", point = 0.01,  pv = 1,             step = 1,    unite = "action",
+                swap_long = 0,     swap_short = 0,     triple = FALSE, spread = 2,  slip = 0.01,          dec = 2),
+  AUDNZD = list(nom = "AUDNZD",            point = 1e-5,  pv = 1e5 * NZDUSD,  step = 0.01, unite = "lot",
+                swap_long = -2.5,  swap_short = -15.2, triple = TRUE,  spread = 3,  slip = 3 * 1e-5 / 2,  dec = 5),
+  EURGBP = list(nom = "EURGBP",            point = 1e-5,  pv = 1e5 * GBPUSD,  step = 0.01, unite = "lot",
+                swap_long = -1.2,  swap_short = -0.4,  triple = TRUE,  spread = 0,  slip = 0,             dec = 5)
+)
+ACTIFS <- names(SPEC)
+```
+
+Fonctions utilitaires : décalage d'une série, mise en forme des nombres, moyenne mobile exponentielle (EMA).
+
+```{r outils}
+decale <- function(x, k) c(rep(NA, k), head(x, -k))           # x[t-k]
+num <- function(x, d = 2) formatC(x, format = "f", digits = d, big.mark = "\u00a0", decimal.mark = ",")
+px  <- function(x, a) num(x, SPEC[[a]]$dec)                    # prix au format de l'actif
+fper <- function(x) formatC(x, digits = 4, format = "g", decimal.mark = ",")    # valeur de per (4 chiffres significatifs)
+qte <- function(l, a) if (SPEC[[a]]$unite == "lot") paste(num(l, 2), "lot") else paste(l, "actions")
+
+ema <- function(x, span) {                     # EMA récursive (pandas adjust = FALSE)
+  a <- 2 / (span + 1); out <- rep(NA_real_, length(x))
+  i0 <- which(!is.na(x))[1]
+  if (is.na(i0)) return(out)
+  out[i0] <- x[i0]
+  if (i0 < length(x)) for (i in (i0 + 1):length(x)) out[i] <- a * x[i] + (1 - a) * out[i - 1]
+  out
+}
+```
+
+```{r specs, echo = FALSE}
+tab(data.frame(Actif = ACTIFS, Nom = sapply(SPEC, `[[`, "nom"), `Valeur de 1,0 de prix ($/lot)` = num(sapply(SPEC, `[[`, "pv"), 2),
+               `Pas de volume` = sapply(SPEC, function(s) paste(s$step, s$unite)), `Swap long (pts)` = sapply(SPEC, `[[`, "swap_long"),
+               `Swap court (pts)` = sapply(SPEC, `[[`, "swap_short"), `Spread (pts)` = sapply(SPEC, `[[`, "spread"), check.names = FALSE),
+    row.names = FALSE, caption = "Spécifications utilisées (compte MetaQuotes-Demo, 30 oct. 2026)")
+```
+
+# Données
+
+`charger()` lit les cours d'un actif et vérifie qu'aucune date n'est en double et que le plus haut et le plus bas
+encadrent bien l'ouverture et la clôture.
+
+```{r donnees}
+charger <- function(a) {
+  d <- read.csv(file.path(DOSSIER, paste0(a, ".csv")))
+  d$Date <- as.Date(d$Date)
+  d <- d[order(d$Date), ]
+  stopifnot(!anyDuplicated(d$Date), all(d$High >= pmax(d$Open, d$Close)), all(d$Low <= pmin(d$Open, d$Close)))
+  d
+}
+DATA <- setNames(lapply(ACTIFS, charger), ACTIFS)
+```
+
+```{r fin-disponible}
+derniere_seance <- as.Date(sapply(DATA, function(d) max(d$Date)), origin = "1970-01-01")
+if (any(derniere_seance < FIN)) stop("Les cours du ", format(FIN, "%d/%m/%Y"), " ne sont pas encore disponibles pour : ",
+                                     paste(ACTIFS[derniere_seance < FIN], collapse = ", "), ". Relancer plus tard.")
+```
+
+```{r resume-donnees, echo = FALSE}
+tab(do.call(rbind, lapply(ACTIFS, function(a) { d <- DATA[[a]]; data.frame(Actif = a, `Séances` = nrow(d), `Début` = min(d$Date), Fin = max(d$Date),
+    `Clôture 28/09/2026` = px(d$Close[d$Date == DEBUT], a), `Dernière clôture` = px(tail(d$Close, 1), a), check.names = FALSE) })),
+    caption = "Historique chargé : il sert à amorcer l'AMA, l'ADX et l'EMA hebdomadaire 40")
+```
+
+**Sources** (Yahoo Finance) : or = contrat à terme GC=F ; USO = cours NYSE ; AUDNZD et EURGBP = barres reconstruites
+à partir des cours horaires, clôture à 17 h, heure de New York. Source utilisée pour cette exécution :
+**`r if (params$source == "yahoo") paste0("téléchargement Yahoo Finance du ", format(Sys.Date(), "%d/%m/%Y")) else "dossier data/ du zip d'origine"`**.
+
+**Contrôle des cours.** Les clôtures chargées sont comparées à celles de mon journal, séance par séance, sur la période
+des trades. Yahoo révise parfois ses cours (l'or du 30 octobre est passé de 3 884,90 à 3 898,90) : un petit écart est
+possible, mais un écart important signalerait un problème de données.
+
+```{r controle-cours}
+journal_clotures <- data.frame(
+  Date = as.Date(c("2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06",
+                   "2026-10-07", "2026-10-08", "2026-10-09", "2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15",
+                   "2026-10-16", "2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-26",
+                   "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30")),
+  XAUUSD = c(4168.4, 4179.7, 4186.7, 4202.3, 4162.3, 4156.8, 4187.1, 4140.7, 4157, 4216.3, 4190.6, 4177.3, 4107.9,
+             4170.1, 4181.1, 4160.1, 4142.6, 4150, 4060.4, 4007.9, 4038.4, 4074.6, 4051.6, 4031.4, 3898.9),
+  USO = c(150.01, 143.35, 145.66, 150.02, 147.37, 143.99, 144.91, 143.91, 147.58, 148.2, 151.03, 153.09, 153.56,
+          157.31, 161.76, 160.81, 160.61, 159.8, 162.51, 169.53, 166.23, 163.88, 166.57, 168.19, 168.83),
+  AUDNZD = c(1.23822, 1.23767, 1.23227, 1.23559, 1.23755, 1.24429, 1.2409, 1.24291, 1.23963, 1.24262, 1.24442,
+             1.24334, 1.24614, 1.23052, 1.22759, 1.2315, 1.23165, 1.23216, 1.23469, 1.23386, 1.23471, 1.23558,
+             1.25356, 1.24694, 1.24816),
+  EURGBP = c(0.85778, 0.85705, 0.85397, 0.85158, 0.84949, 0.8483, 0.84792, 0.84714, 0.84737, 0.84624, 0.84428,
+             0.84478, 0.84546, 0.84492, 0.84313, 0.84265, 0.83961, 0.83846, 0.83668, 0.83739, 0.83733, 0.83591,
+             0.83699, 0.83502, 0.83307))
+ecarts <- do.call(rbind, lapply(ACTIFS, function(a) {
+  r <- DATA[[a]]$Close[match(journal_clotures$Date, DATA[[a]]$Date)]
+  e <- abs(r / journal_clotures[[a]] - 1)
+  data.frame(Actif = a, `Séances comparées` = sum(!is.na(r)), `Séances manquantes` = sum(is.na(r)),
+             `Clôtures identiques (à 0,01 % près)` = sum(e < 1e-4, na.rm = TRUE),
+             `Écart max` = sprintf("%.3f %%", 100 * max(e, na.rm = TRUE)),
+             `Date de l'écart max` = format(journal_clotures$Date[which.max(e)]), check.names = FALSE)
+}))
+tab(ecarts, row.names = FALSE, caption = "Clôtures chargées comparées à celles du journal (28 sept. – 30 oct. 2026)")
+```
+
+# Indicateurs
+
+1. **AMA de Kaufman (21, 2, 30).** Le ratio d'efficience ER = |C − C[21]| / somme des |variations| sur 21 jours vaut 1
+   quand le prix va tout droit et 0 quand il fait du bruit. La vitesse de la moyenne suit ER : rapide (2) en tendance,
+   lente (30) dans le bruit.
+2. **AMA Variation « Best ».** L'AMA est lissée sur 2 barres, sa pente sur 2 barres est calculée, puis lissée par une
+   EMA 21 : c'est `per`. `per ≥ 0` signale un momentum haussier, `per < 0` un momentum baissier.
+3. **ADX(14) et ATR(14) de Wilder.** L'ADX mesure la force de la tendance (seuil 17). L'ATR mesure l'amplitude
+   moyenne d'une séance ; il fixe la distance du stop et donc la taille de la position.
+4. **Tendance hebdomadaire.** EMA 10 et EMA 40 des clôtures du vendredi. Le moteur n'utilise que la **dernière semaine
+   terminée** : une décision du mercredi ne voit pas la clôture du vendredi suivant.
+
+```{r indicateurs}
+# 1) AMA de Kaufman : ER = |C - C[n]| / somme|dC| ; sc = (ER*(f - s) + s)^2
+ama_kaufman <- function(c, n = AMA_N, fast = AMA_FAST, slow = AMA_SLOW) {
+  f <- 2 / (fast + 1); s <- 2 / (slow + 1)
+  ama <- rep(NA_real_, length(c))
+  ama[n + 1] <- c[n + 1]                                       # amorçage
+  for (i in (n + 2):length(c)) {
+    vol <- sum(abs(diff(c[(i - n):i])))
+    er  <- if (vol > 0) abs(c[i] - c[i - n]) / vol else 0
+    sc  <- (er * (f - s) + s)^2
+    ama[i] <- sc * c[i] + (1 - sc) * ama[i - 1]
+  }
+  ama
+}
+
+# 2) Variation "Best" : AMA lissée sur 2 barres, pente sur 2 barres, puis EMA 21
+ama_best <- function(c) {
+  ama  <- ama_kaufman(c)
+  amas <- (ama + decale(ama, 1)) / 2
+  dif  <- amas - decale(amas, 2)
+  data.frame(ama = ama, per = ema(dif, PER_EMA))
+}
+
+# 3) ADX(14) et ATR(14) de Wilder
+lissage_wilder <- function(x, n) {             # TR14, +DM14, -DM14 (version somme)
+  out <- rep(NA_real_, length(x))
+  out[n + 1] <- sum(x[2:(n + 1)])
+  for (i in (n + 2):length(x)) out[i] <- out[i - 1] - out[i - 1] / n + x[i]
+  out
+}
+adx_atr <- function(h, l, c, n = ADX_N) {
+  pc  <- decale(c, 1)
+  tr  <- pmax(h - l, abs(h - pc), abs(l - pc))
+  up  <- h - decale(h, 1); dn <- decale(l, 1) - l
+  pdm <- ifelse(up > dn & up > 0, up, 0); mdm <- ifelse(dn > up & dn > 0, dn, 0)
+  pdi <- 100 * lissage_wilder(pdm, n) / lissage_wilder(tr, n)
+  mdi <- 100 * lissage_wilder(mdm, n) / lissage_wilder(tr, n)
+  dx  <- 100 * abs(pdi - mdi) / (pdi + mdi)
+  adx <- rep(NA_real_, length(c)); v0 <- which(!is.na(dx))[1]; k <- v0 + n - 1
+  adx[k] <- mean(dx[v0:k])
+  for (i in (k + 1):length(c)) adx[i] <- (adx[i - 1] * (n - 1) + dx[i]) / n
+  atr <- rep(NA_real_, length(c))
+  atr[ATR_N + 1] <- mean(tr[2:(ATR_N + 1)])
+  for (i in (ATR_N + 2):length(c)) atr[i] <- (atr[i - 1] * (ATR_N - 1) + tr[i]) / ATR_N
+  data.frame(adx = adx, atr = atr, pdi = pdi, mdi = mdi)
+}
+
+# 4) Tendance hebdomadaire : EMA10 vs EMA40 des clôtures du vendredi,
+#    en n'utilisant que la DERNIÈRE SEMAINE TERMINÉE (pas de regard vers le futur)
+tendance_hebdo <- function(dates, close) {
+  wd   <- as.POSIXlt(dates)$wday
+  vend <- dates + (5 - wd + 7) %% 7                       # vendredi de la semaine
+  der  <- !duplicated(vend, fromLast = TRUE)              # dernière séance de chaque semaine
+  sem  <- vend[der]; e10 <- ema(close[der], W_FAST); e40 <- ema(close[der], W_SLOW)
+  j <- match(vend, sem) - 1; j[j < 1] <- NA               # semaine précédente
+  data.frame(tw = ifelse(e10 > e40, 1, -1)[j], ema10_sem = e10[j], ema40_sem = e40[j], semaine_ref = sem[j])
+}
+```
+
+Un signal d'achat (`long_ok`) exige les trois conditions d'achat le même jour ; de même pour la vente (`short_ok`).
+
+```{r signaux}
+signaux <- function(d) {
+  s <- cbind(d, ama_best(d$Close), adx_atr(d$High, d$Low, d$Close), tendance_hebdo(d$Date, d$Close))
+  s$adx_veille <- decale(s$adx, 1)
+  adx_ok     <- !is.na(s$adx) & s$adx >= ADX_MIN
+  s$long_ok  <- adx_ok & !is.na(s$per) & s$per >= 0 & !is.na(s$tw) & s$tw == 1
+  s$short_ok <- adx_ok & !is.na(s$per) & s$per <  0 & !is.na(s$tw) & s$tw == -1
+  s
+}
+SIG <- lapply(DATA, signaux)
+```
+
+# Moteur de décision
+
+Chaque jour de la période, et pour chaque actif, le moteur suit cet ordre :
+
+1. **Stop.** Si une position ouverte un jour précédent a touché son stop pendant la séance, elle est fermée au stop
+   (ou à l'ouverture si le cours a ouvert au-delà du stop).
+2. **Limites du compte.** Si la perte du jour atteint 5 % ou le drawdown 10 %, tout est fermé.
+3. **Décision à la clôture.** Il **sort** si une condition est perdue ; sinon il **conserve**. Sans position, il
+   **entre** si les trois conditions sont réunies.
+4. **Fin de période.** Le dernier jour (`r format(as.Date(params$fin), "%d/%m/%Y")`), il ferme tout au cours de clôture.
+
+Ces fonctions écrivent la justification de chaque décision, avec les valeurs des indicateurs.
+
+```{r regles}
+# Textes qui justifient chaque décision (entrée, maintien, sortie, absence de signal)
+txt_tendance <- function(b) sprintf("tendance hebdo %s (EMA10 %s EMA40, semaine du %s)",
+  ifelse(b$tw == 1, "haussière", "baissière"), ifelse(b$tw == 1, ">", "<"), format(b$semaine_ref, "%d/%m"))
+
+raison_entree <- function(b, a, sens, lots, cap) {
+  sprintf("%s : per = %s %s 0, ADX = %s >= 17, %s. Stop = %s %s 2 x ATR (%s) = %s ; taille = 1 %% x %s $ / (2 x ATR x %s $) = %s.",
+    ifelse(sens == 1, "ACHAT", "VENTE"), fper(b$per), ifelse(sens == 1, ">=", "<"),
+    num(b$adx, 2), txt_tendance(b), px(b$Close, a), ifelse(sens == 1, "-", "+"), px(b$atr, a),
+    px(b$Close - sens * ATR_MULT * b$atr, a), num(cap, 2), num(SPEC[[a]]$pv, 2), qte(lots, a))
+}
+raison_sortie <- function(b, sens) {
+  r <- character(0)
+  if (sens == 1  && b$per <  0) r <- c(r, sprintf("per = %s < 0 (momentum AMA devenu baissier)", fper(b$per)))
+  if (sens == -1 && b$per >= 0) r <- c(r, sprintf("per = %s >= 0 (momentum AMA devenu haussier)", fper(b$per)))
+  if (is.na(b$tw) || b$tw != sens) r <- c(r, "tendance hebdo inversée")
+  if (b$adx < ADX_MIN) r <- c(r, sprintf("ADX passé de %s à %s < 17 (tendance trop faible)", num(b$adx_veille, 2), num(b$adx, 2)))
+  paste("Condition perdue :", paste(r, collapse = " ; "))
+}
+raison_attente <- function(b) {
+  if (is.na(b$per) || is.na(b$adx) || is.na(b$tw)) return("Indicateurs indisponibles")
+  r <- character(0); dir <- ifelse(b$per >= 0, 1, -1)
+  if (b$tw != dir) r <- c(r, sprintf("per %s 0 mais %s (conflit)", ifelse(dir == 1, ">=", "<"), txt_tendance(b)))
+  if (b$adx < ADX_MIN) r <- c(r, sprintf("ADX = %s < 17", num(b$adx, 2)))
+  paste("Pas de signal :", paste(r, collapse = " ; "))
+}
+```
+
+La simulation jour par jour :
+
+```{r simulation}
+simuler_v2 <- function(SIG, debut = DEBUT, fin = FIN, capital = CAPITAL) {
+  jours <- sort(unique(do.call(c, lapply(SIG, function(s) s$Date[s$Date >= debut & s$Date <= fin]))))
+  realise <- 0; pos <- list(); trades <- list(); journal <- list()
+  eq_veille <- capital; pic <- capital; arret_dd <- FALSE
+
+  fermer <- function(a, d, prix, type, raison) {
+    p <- pos[[a]]
+    pnl <- (prix - p$entree) * p$sens * p$lots * SPEC[[a]]$pv
+    realise <<- realise + pnl
+    trades[[length(trades) + 1]] <<- c(p[c("actif", "sens", "date_entree", "entree", "atr", "sl", "lots", "risque", "capital_ref", "raison_entree")],
+                                       list(date_sortie = d, sortie = prix, type_sortie = type, raison_sortie = raison, pnl_brut = pnl))
+    pos[[a]] <<- NULL
+  }
+  latent <- function(barres) sum(vapply(names(pos), function(a) {
+    b <- barres[[a]]; if (is.null(b)) 0 else (b$Close - pos[[a]]$entree) * pos[[a]]$sens * pos[[a]]$lots * SPEC[[a]]$pv
+  }, numeric(1)))
+
+  for (d in as.list(jours)) {
+    dernier <- d == fin
+    barres <- lapply(SIG, function(s) { i <- match(d, s$Date); if (is.na(i)) NULL else s[i, ] })
+    dec <- setNames(rep("", length(ACTIFS)), ACTIFS); why <- dec
+    avant <- setNames(vapply(ACTIFS, function(a) if (is.null(pos[[a]])) "-" else ifelse(pos[[a]]$sens == 1, "Long", "Short"), ""), ACTIFS)
+
+    # 1) Stop-loss touché pendant la séance (positions ouvertes AVANT aujourd'hui)
+    for (a in ACTIFS) {
+      b <- barres[[a]]; p <- pos[[a]]
+      if (is.null(b) || is.null(p) || p$date_entree >= d) next
+      if (p$sens == 1 && b$Low <= p$sl) {
+        f <- min(b$Open, p$sl); why[a] <- sprintf("Plus bas %s <= stop %s : sortie à %s", px(b$Low, a), px(p$sl, a), px(f, a))
+        fermer(a, d, f, "Stop-loss", why[a]); dec[a] <- "STOP"
+      } else if (p$sens == -1 && b$High >= p$sl) {
+        f <- max(b$Open, p$sl); why[a] <- sprintf("Plus haut %s >= stop %s : sortie à %s", px(b$High, a), px(p$sl, a), px(f, a))
+        fermer(a, d, f, "Stop-loss", why[a]); dec[a] <- "STOP"
+      }
+    }
+
+    # 2) Limites de risque du compte (perte du jour 5 %, drawdown 10 %)
+    eq <- capital + realise + latent(barres)
+    bloque <- arret_dd
+    if ((eq - eq_veille) / eq_veille <= -PERTE_JOUR_MAX || (eq - pic) / pic <= -DD_MAX) {
+      if ((eq - pic) / pic <= -DD_MAX) arret_dd <- TRUE
+      for (a in names(pos)) { why[a] <- "Limite de risque du compte atteinte"; fermer(a, d, barres[[a]]$Close, "Limite de risque", why[a]); dec[a] <- "SORTIE (risque)" }
+      bloque <- TRUE
+    }
+
+    # 3) Décision à la clôture, actif par actif
+    for (a in ACTIFS) {
+      b <- barres[[a]]; if (is.null(b)) next
+      p <- pos[[a]]
+      if (!is.null(p)) {
+        ok <- if (p$sens == 1) b$long_ok else b$short_ok
+        if (!ok) {
+          why[a] <- raison_sortie(b, p$sens); fermer(a, d, b$Close, "Signal", why[a]); dec[a] <- "SORTIE"
+        } else if (!dernier) {
+          dec[a] <- paste("CONSERVER", ifelse(p$sens == 1, "long", "short"))
+          why[a] <- sprintf("Conditions toujours vraies : per = %s, ADX = %s, %s ; stop %s", fper(b$per),
+                            num(b$adx, 2), txt_tendance(b), px(p$sl, a))
+        }
+      }
+      if (is.null(pos[[a]]) && !dernier && !bloque && length(pos) < MAX_POS && (b$long_ok || b$short_ok) && !is.na(b$atr)) {
+        sens <- ifelse(b$long_ok, 1, -1); dist <- ATR_MULT * b$atr; cap <- capital + realise
+        lots <- floor(RISQUE * cap / (dist * SPEC[[a]]$pv) / SPEC[[a]]$step + 1e-9) * SPEC[[a]]$step
+        if (lots >= SPEC[[a]]$step) {
+          r <- raison_entree(b, a, sens, lots, cap)
+          pos[[a]] <- list(actif = a, sens = sens, date_entree = d, entree = b$Close, atr = b$atr, sl = b$Close - sens * dist,
+                           lots = lots, risque = lots * dist * SPEC[[a]]$pv, capital_ref = cap, raison_entree = r)
+          dec[a] <- paste0(if (dec[a] != "") paste(dec[a], "+ ") else "", ifelse(sens == 1, "ACHAT", "VENTE"))
+          why[a] <- paste0(if (why[a] != "") paste(why[a], "| ") else "", r)
+        }
+      }
+      if (dec[a] == "" && is.null(pos[[a]])) { dec[a] <- "AUCUNE"; why[a] <- raison_attente(b) }
+    }
+
+    # 4) Fin de période : clôture forcée de toutes les positions au cours de clôture
+    if (dernier) for (a in names(pos)) {
+      why[a] <- sprintf("Clôture forcée le %s (fin de la période d'évaluation) à %s", format(d, "%d/%m/%Y"), px(barres[[a]]$Close, a))
+      fermer(a, d, barres[[a]]$Close, "Clôture forcée", why[a]); dec[a] <- "CLÔTURE FORCÉE"
+    }
+
+    for (a in ACTIFS) {
+      b <- barres[[a]]; if (is.null(b)) next
+      journal[[length(journal) + 1]] <- data.frame(Date = d, Actif = a, Cloture = b$Close, per = b$per, ADX = b$adx, ATR = b$atr,
+        Tendance_hebdo = ifelse(is.na(b$tw), "n/d", ifelse(b$tw == 1, "Haussière", "Baissière")),
+        Long_OK = b$long_ok, Short_OK = b$short_ok, Position_avant = avant[[a]],
+        Position_apres = if (is.null(pos[[a]])) "-" else ifelse(pos[[a]]$sens == 1, "Long", "Short"),
+        Decision = dec[[a]], Raison = why[[a]])
+    }
+    eq_veille <- capital + realise + latent(barres); pic <- max(pic, eq_veille)
+  }
+  tr <- do.call(rbind, lapply(trades, as.data.frame))
+  tr <- tr[order(tr$date_entree, match(tr$actif, ACTIFS)), ]
+  tr$sens <- ifelse(tr$sens == 1, "Achat", "Vente")
+  rownames(tr) <- NULL
+  list(trades = tr, journal = do.call(rbind, journal), jours = jours)
+}
+RES <- simuler_v2(SIG)
+```
+
+Les coûts : swap pour chaque nuit détenue (triple le mercredi), un spread par aller-retour et un demi-spread de
+glissement par ordre.
+
+```{r couts}
+# Swap : chaque séance détenue sauf le jour de sortie, triple le mercredi.
+# Spread : un spread par aller-retour. Glissement : un demi-spread par ordre (USO : 0,01 $ par action et par ordre).
+seances_tenues <- function(a, de, ds, jusqu = ds) { x <- SIG[[a]]$Date; x[x >= de & x < ds & x <= jusqu] }
+nuits <- function(a, s) if (SPEC[[a]]$triple) length(s) + 2 * sum(as.POSIXlt(s)$wday == 3) else length(s)
+couts_trade <- function(t) {
+  sp <- SPEC[[t$actif]]; s <- seances_tenues(t$actif, t$date_entree, t$date_sortie)
+  swp <- ifelse(t$sens == "Achat", sp$swap_long, sp$swap_short)
+  data.frame(Actif = t$actif, Sens = t$sens, Date_entree = t$date_entree, Seances = length(s), Nuits_facturees = nuits(t$actif, s),
+             Swap = swp * sp$point * sp$pv * t$lots * nuits(t$actif, s), Spread = -sp$spread * sp$point * sp$pv * t$lots,
+             Glissement = -2 * sp$slip * sp$pv * t$lots, Commission = 0)
+}
+COUTS <- do.call(rbind, lapply(split(RES$trades, seq_len(nrow(RES$trades))), couts_trade))
+COUTS$Total <- COUTS$Swap + COUTS$Spread + COUTS$Glissement + COUTS$Commission
+TRADES <- RES$trades
+TRADES$couts <- COUTS$Total
+TRADES$pnl_net <- TRADES$pnl_brut + TRADES$couts
+```
+
+Le capital net de chaque jour : capital de départ + P&L réalisé + P&L latent à la clôture − coûts engagés.
+
+```{r courbe}
+# Capital net quotidien = capital + P&L réalisé + P&L latent à la clôture - coûts engagés
+courbe <- do.call(rbind, lapply(as.list(RES$jours), function(d) {
+  real <- lat <- cout <- risque <- 0
+  for (i in seq_len(nrow(TRADES))) {
+    t <- TRADES[i, ]; a <- t$actif; sp <- SPEC[[a]]; sens <- ifelse(t$sens == "Achat", 1, -1)
+    if (t$date_entree > d) next
+    s <- seances_tenues(a, t$date_entree, t$date_sortie, d)
+    cout <- cout - (COUTS$Spread[i] + COUTS$Glissement[i]) -
+            ifelse(sens == 1, sp$swap_long, sp$swap_short) * sp$point * sp$pv * t$lots * nuits(a, s)
+    if (t$date_sortie <= d) { real <- real + t$pnl_brut; next }
+    c_d <- SIG[[a]]$Close[match(d, SIG[[a]]$Date)]
+    lat <- lat + (c_d - t$entree) * sens * t$lots * sp$pv; risque <- risque + t$risque
+  }
+  data.frame(Date = d, Realise_brut = real, Latent = lat, Couts = -cout, Capital_net = CAPITAL + real + lat - cout, Risque_ouvert = risque)
+}))
+courbe$Var_jour_pct <- 100 * diff(c(CAPITAL, courbe$Capital_net)) / c(CAPITAL, head(courbe$Capital_net, -1))
+courbe$Pic <- cummax(pmax(CAPITAL, courbe$Capital_net))
+courbe$Drawdown_pct <- 100 * (courbe$Capital_net - courbe$Pic) / courbe$Pic
+courbe$Risque_ouvert_pct <- 100 * courbe$Risque_ouvert / CAPITAL      # somme des risques jusqu'au stop / capital initial
+```
+
+# Résultats
+
+```{r kpi, echo = FALSE}
+fin_c <- tail(courbe$Capital_net, 1)
+tab(data.frame(Indicateur = c("Capital initial", "Trades", "Gagnants / perdants", "P&L brut", "Coûts (swap, spread, glissement, commission)",
+                              "P&L net", "Capital final net", "Rendement net", "Pire journée", "Drawdown maximal", "Risque ouvert maximal"),
+               Valeur = c(paste(num(CAPITAL), "$"), nrow(TRADES), paste(sum(TRADES$pnl_net > 0), "/", sum(TRADES$pnl_net <= 0)),
+                          paste(num(sum(TRADES$pnl_brut)), "$"), paste(num(sum(TRADES$couts)), "$"), paste(num(sum(TRADES$pnl_net)), "$"),
+                          paste(num(fin_c), "$"), paste(num(100 * (fin_c / CAPITAL - 1)), "%"), paste(num(min(courbe$Var_jour_pct)), "%"),
+                          paste(num(min(courbe$Drawdown_pct)), "%"), paste(num(max(courbe$Risque_ouvert_pct)), "%"))),
+    caption = sprintf("Synthèse (toutes les positions fermées le %s)", format(FIN, "%d/%m/%Y")))
+```
+
+## Journal des trades
+
+```{r journal-trades, echo = FALSE}
+J <- TRADES
+tab(data.frame(`#` = seq_len(nrow(J)), Actif = J$actif, Sens = J$sens, `Date entrée` = format(J$date_entree, "%d/%m/%Y"),
+               `Prix entrée` = mapply(px, J$entree, J$actif), `ATR(14)` = mapply(px, J$atr, J$actif), `Stop-loss` = mapply(px, J$sl, J$actif),
+               `Quantité` = mapply(qte, J$lots, J$actif), `Risque $` = num(J$risque), `Date sortie` = format(J$date_sortie, "%d/%m/%Y"),
+               `Prix sortie` = mapply(px, J$sortie, J$actif), `Type de sortie` = J$type_sortie, `P&L brut $` = num(J$pnl_brut),
+               `Coûts $` = num(J$couts), `P&L net $` = num(J$pnl_net), check.names = FALSE), row.names = FALSE) |>
+  column_spec(15, bold = TRUE, color = ifelse(J$pnl_net >= 0, "#1a7f37", "#c62828"))
+```
+
+## Pourquoi chaque trade a été ouvert et fermé
+
+```{r justification, echo = FALSE, results = "asis"}
+for (i in seq_len(nrow(TRADES))) {
+  t <- TRADES[i, ]
+  cat(sprintf("**%d. %s – %s du %s au %s** (P&L net %s $)\n\n- *Entrée* : %s\n- *Sortie* : %s\n\n", i, t$actif, t$sens,
+              format(t$date_entree, "%d/%m"), format(t$date_sortie, "%d/%m"), num(t$pnl_net), t$raison_entree, t$raison_sortie))
+}
+```
+
+## Coûts de transaction
+
+```{r table-couts, echo = FALSE}
+C <- COUTS; C[, c("Swap", "Spread", "Glissement", "Commission", "Total")] <- lapply(C[, c("Swap", "Spread", "Glissement", "Commission", "Total")], function(v) num(v + 0, 2) |> sub(pattern = "^-0,00$", replacement = "0,00"))
+C$Date_entree <- format(C$Date_entree, "%d/%m/%Y")
+names(C) <- c("Actif", "Sens", "Date d'entrée", "Séances détenues", "Nuits facturées", "Swap $", "Spread $", "Glissement $", "Commission $", "Total $")
+tab(C, row.names = FALSE, caption = "Swaps facturés chaque nuit détenue (triple le mercredi), un spread par aller-retour, un demi-spread de glissement par ordre (USO : 0,01 $ par action et par ordre), commission nulle")
+```
+
+## Évolution du capital
+
+```{r graphe-capital, echo = FALSE}
+ggplot(courbe, aes(Date, Capital_net)) + geom_hline(yintercept = CAPITAL, linetype = 2, colour = "grey50") +
+  geom_line(colour = "#1f5fa8", linewidth = 1) + geom_point(colour = "#1f5fa8", size = 1.6) +
+  scale_y_continuous(labels = function(x) paste(num(x, 0), "$")) +
+  labs(x = NULL, y = "Capital net", title = "Capital net quotidien (réalisé + latent − coûts)") + theme_minimal(base_size = 12)
+```
+
+```{r table-courbe, echo = FALSE}
+K <- courbe[, c("Date", "Realise_brut", "Latent", "Couts", "Capital_net", "Var_jour_pct", "Drawdown_pct", "Risque_ouvert_pct")]
+K$Date <- format(K$Date, "%d/%m/%Y"); K[, -1] <- lapply(K[, -1], num)
+names(K) <- c("Date", "Réalisé brut $", "Latent $", "Coûts $", "Capital net $", "Var. jour %", "Drawdown %", "Risque ouvert %")
+tab(K, row.names = FALSE) |> scroll_box(height = "380px")
+```
+
+La perte journalière la plus forte est de `r num(min(courbe$Var_jour_pct))` %, pour une limite de 5 %. Le drawdown
+maximal est de `r num(min(courbe$Drawdown_pct))` %, pour une limite de 10 %.
+
+## Cours, entrées, sorties et stops
+
+```{r graphe-actifs, echo = FALSE, fig.height = 7}
+P <- do.call(rbind, lapply(ACTIFS, function(a) { s <- SIG[[a]]; s <- s[s$Date >= DEBUT - 10 & s$Date <= FIN, ]; data.frame(Actif = a, Date = s$Date, Close = s$Close) }))
+E <- rbind(data.frame(Actif = TRADES$actif, Date = TRADES$date_entree, Prix = TRADES$entree, Ordre = ifelse(TRADES$sens == "Achat", "Entrée achat", "Entrée vente")),
+           data.frame(Actif = TRADES$actif, Date = TRADES$date_sortie, Prix = TRADES$sortie, Ordre = "Sortie"))
+S <- data.frame(Actif = TRADES$actif, x = TRADES$date_entree, xend = TRADES$date_sortie, y = TRADES$sl)
+ggplot(P, aes(Date, Close)) + geom_line(colour = "grey35") +
+  geom_segment(data = S, aes(x = x, xend = xend, y = y, yend = y), colour = "#c62828", linetype = 2, inherit.aes = FALSE) +
+  geom_point(data = E, aes(Date, Prix, shape = Ordre, colour = Ordre), size = 3) +
+  scale_shape_manual(values = c("Entrée achat" = 17, "Entrée vente" = 25, "Sortie" = 4)) +
+  scale_colour_manual(values = c("Entrée achat" = "#1a7f37", "Entrée vente" = "#c62828", "Sortie" = "black")) +
+  facet_wrap(~Actif, scales = "free_y", ncol = 2) + labs(x = NULL, y = NULL, subtitle = "Ligne rouge pointillée : stop-loss 2 × ATR") +
+  theme_minimal(base_size = 12) + theme(legend.position = "bottom")
+```
+
+# Décisions quotidiennes générées par R
+
+Chaque ligne donne les valeurs des indicateurs à la clôture, puis la décision du moteur et sa raison. La table peut
+être filtrée et triée.
+
+```{r decisions, echo = FALSE}
+D <- RES$journal
+D$Cloture <- mapply(px, D$Cloture, D$Actif); D$ATR <- mapply(px, D$ATR, D$Actif)
+D$per <- fper(D$per); D$ADX <- num(D$ADX, 2)
+datatable(class = "compact stripe", D[, c("Date", "Actif", "Cloture", "per", "ADX", "ATR", "Tendance_hebdo", "Position_avant", "Decision", "Position_apres", "Raison")],
+          rownames = FALSE, filter = "top", options = list(pageLength = 20, scrollX = TRUE, autoWidth = TRUE, order = list(list(0, "asc")), columnDefs = list(list(width = "520px", targets = 10), list(width = "75px", targets = 0))),
+          colnames = c("Date", "Actif", "Clôture", "per", "ADX", "ATR", "Tendance hebdo", "Position avant", "Décision", "Position après", "Raison"))
+```
+
+# Contrôle de reproductibilité
+
+Mon journal couvre le 28 septembre au 30 octobre, avec toutes les positions fermées le 30 octobre. Pour le contrôle, le
+moteur est relancé sur cette même période, aux taux de change du journal (NZDUSD 0,56322 et GBPUSD 1,33910). Il doit
+retrouver les cinq trades : même actif, même date d'entrée, même quantité et même P&L brut à 0,01 $ près.
+
+```{r controle}
+attendu <- data.frame(actif = c("USO", "AUDNZD", "EURGBP", "XAUUSD", "AUDNZD"),
+                      date_entree = as.Date(c("2026-09-28", "2026-09-28", "2026-10-05", "2026-10-12", "2026-10-28")),
+                      lots = c(46, 0.63, 0.68, 0.28, 0.53), pnl = c(865.72, -124.55, 1386.83, 816.76, -161.19))
+SPEC_periode <- SPEC                                         # taux du journal (30 oct.) le temps du contrôle
+SPEC$AUDNZD$pv <- 1e5 * 0.5632216334342957; SPEC$EURGBP$pv <- 1e5 * 1.3391003608703613
+TJ <- simuler_v2(SIG, fin = as.Date("2026-10-30"))$trades
+SPEC <- SPEC_periode
+k <- merge(attendu, TJ[, c("actif", "date_entree", "lots", "pnl_brut")], by = c("actif", "date_entree"), all.x = TRUE,
+           suffixes = c("_journal", "_R"))
+k$Verdict <- ifelse(is.na(k$lots_R), "trade absent",
+             ifelse(abs(k$lots_journal - k$lots_R) < 1e-9 & abs(k$pnl - k$pnl_brut) < 0.01, "identique", "écart"))
+controle_ok <- nrow(TJ) == 5 && all(k$Verdict == "identique")
+tab(k[order(k$date_entree), ], row.names = FALSE, col.names = c("Actif", "Entrée", "Quantité (journal)", "P&L brut $ (journal)",
+    "Quantité (R)", "P&L brut $ (R)", "Verdict"))
+```
+
+**`r if (controle_ok) "Contrôle OK : sur la période du journal, les 5 trades sont reproduits à 0,01 $ près." else paste0("ÉCART : sur la période du journal, le moteur ne retrouve pas exactement les 5 trades (", nrow(TJ), " trades trouvés).")`**
+
+# Exports
+
+Les mêmes fichiers que le script `GES816_V2_moteur.R`, dans le dossier `sorties/`.
+
+```{r export}
+dir.create("sorties", showWarnings = FALSE)
+write.csv(TRADES,      "sorties/trades.csv", row.names = FALSE)
+write.csv(RES$journal, "sorties/decisions_quotidiennes.csv", row.names = FALSE)
+write.csv(COUTS,       "sorties/couts.csv", row.names = FALSE)
+write.csv(courbe,      "sorties/courbe_capital.csv", row.names = FALSE)
+list.files("sorties")
+```
+
+# Limites et hypothèses
+
+- **Simulation à la clôture.** Les ordres sont exécutés au cours de clôture du jour du signal. Le stop est exécuté au
+  niveau du stop, ou à l'ouverture en cas de gap.
+- **Ordre des étapes dans la journée.** Les stops sont traités avant les décisions de clôture. Le capital qui sert à
+  dimensionner une position est le capital initial plus le P&L réalisé brut.
+- **Révision des données.** Le cours de clôture de l'or du 30 octobre a été révisé par Yahoo, de 3 884,9 à 3 898,9
+  (règlement). Ce document utilise 3 898,9.
+- **Historique.** Les résultats ne changent pas quand l'historique commence en janvier 2024 ou en janvier 2025. Avec un
+  départ en juin 2025, l'EMA hebdomadaire 40 est moins bien amorcée, et la vente de l'or passe du 12 au 5 octobre.
+- **Coûts.** Les swaps et spreads sont ceux affichés le 30 octobre, appliqués à toute la période. Le spread de USO
+  (0,02 $) est une hypothèse.
+- **Conversion en dollars.** Le P&L sur AUDNZD et EURGBP est converti en $ aux taux du dernier jour : NZDUSD
+  `r round(NZDUSD, 5)` et GBPUSD `r round(GBPUSD, 5)`.
+- **Petit échantillon.** Quelques trades sur cinq semaines ne permettent pas de conclure statistiquement à la rentabilité
+  de la méthode.
+
+```{r session, echo = FALSE}
+cat(R.version.string, "| knitr", as.character(packageVersion("knitr")), "| rmarkdown", as.character(packageVersion("rmarkdown")))
+```

@@ -1,0 +1,80 @@
+PRÉ-ENREGISTREMENT N° 2 – GES816
+Date : 15 octobre 2026, avant tout téléchargement des actifs ci-dessous.
+
+Contexte : le test n° 1 (H1 à H4 sur 23 actifs, 2001-2016) n'a confirmé aucune hypothèse
+(p ajustée minimale 0,150 ; H1 : Sharpe 0,44, t = 1,78). Ce test n° 2 vérifie si H1 se généralise
+à d'autres marchés.
+
+Hypothèse testée (inchangée) : H1 = position quand l'OOI (diapo 269) et la méthode
+vélocité/accélération (diapos 566-568) sont d'accord, seulement si ADX(14) >= 17 et dans le sens
+de la tendance hebdomadaire EMA-10/EMA-40 (diapos 250-253, 613-615). Paramètres par défaut des diapos.
+
+Univers : 54 actifs absents des 23 ayant servi à formuler H1, choisis par une règle neutre
+(marchés liquides des grandes classes disponibles sur Yahoo Finance), sans regarder aucune performance.
+Un actif indisponible au téléchargement est exclu d'office.
+  EURAUD     (EURAUD=X)
+  EURCAD     (EURCAD=X)
+  EURNZD     (EURNZD=X)
+  GBPAUD     (GBPAUD=X)
+  GBPCAD     (GBPCAD=X)
+  GBPCHF     (GBPCHF=X)
+  GBPNZD     (GBPNZD=X)
+  AUDJPY     (AUDJPY=X)
+  NZDJPY     (NZDJPY=X)
+  CHFJPY     (CHFJPY=X)
+  AUDCHF     (AUDCHF=X)
+  CADCHF     (CADCHF=X)
+  NZDCHF     (NZDCHF=X)
+  EURNOK     (EURNOK=X)
+  EURSEK     (EURSEK=X)
+  USDSEK     (SEK=X)
+  USDNOK     (NOK=X)
+  USDSGD     (SGD=X)
+  USDZAR     (ZAR=X)
+  USDMXN     (MXN=X)
+  BRENT      (BZ=F)
+  NATGAS     (NG=F)
+  HEATOIL    (HO=F)
+  GASOLINE   (RB=F)
+  PLATINUM   (PL=F)
+  PALLADIUM  (PA=F)
+  CORN       (ZC=F)
+  WHEAT      (ZW=F)
+  SOYBEAN    (ZS=F)
+  COFFEE     (KC=F)
+  SUGAR      (SB=F)
+  COCOA      (CC=F)
+  COTTON     (CT=F)
+  CATTLE     (LE=F)
+  HOGS       (HE=F)
+  US2Y       (ZT=F)
+  US5Y       (ZF=F)
+  US10Y      (ZN=F)
+  US30Y      (ZB=F)
+  NAS100     (^IXIC)
+  US30       (^DJI)
+  US2000     (^RUT)
+  FRA40      (^FCHI)
+  EU50       (^STOXX50E)
+  NETH25     (^AEX)
+  ESP35      (^IBEX)
+  SUI20      (^SSMI)
+  HK50       (^HSI)
+  AUS200     (^AXJO)
+  CAN60      (^GSPTSE)
+  KOR200     (^KS11)
+  BRA50      (^BVSP)
+  MEX35      (^MXX)
+  TWN        (^TWII)
+
+Période : janv. 2001 – oct. 2026 (300 barres de chauffe par actif).
+Exécution : signal à la clôture t, position de t à t+1 ; spread relatif fixe par actif (hypothèse prudente)
+payé à moitié à chaque entrée et sortie ; risque égal, 10 % de volatilité par actif ; moyenne sur les actifs disponibles.
+
+Critère de succès (test unique) : p-value unilatérale < 0,05 (H0 : Sharpe <= 0).
+Résultats secondaires et descriptifs (sans valeur de confirmation) : sous-périodes, classes d'actifs, V2.
+Le résultat sera rapporté tel quel.
+
+Contrôles faits avant envoi : parité exacte avec le moteur du test n° 1 (écart 0,0) ;
+sur marche aléatoire sans frais, 8 tirages : t moyen 0,01, écart-type 0,95 (aucun biais).
+Empreinte SHA-256 du code : 88256d9642383d5569cf98cc300bc42629434f78b33d4a317fff74c7753aa6c9
